@@ -10,11 +10,11 @@ class PriceWatchViewModel : ViewModel() {
     private val _searches = MutableStateFlow<List<SearchResult>>(emptyList())
     val searches: StateFlow<List<SearchResult>> = _searches.asStateFlow()
 
-    private val _settings = MutableStateFlow(AppSettings())
-    val settings: StateFlow<AppSettings> = _settings.asStateFlow()
-
     private val _selectedSearch = MutableStateFlow<SearchResult?>(null)
     val selectedSearch: StateFlow<SearchResult?> = _selectedSearch.asStateFlow()
+
+    private val _settings = MutableStateFlow(AppSettings())
+    val settings: StateFlow<AppSettings> = _settings.asStateFlow()
 
     fun addSearch(
         keyword: String,
@@ -24,7 +24,6 @@ class PriceWatchViewModel : ViewModel() {
         notificationMinute: Int
     ): SearchResult? {
         if (keyword.isBlank()) return null
-
         val search = SearchRepository.search(keyword, code, maxPrice)
         _searches.value = listOf(search) + _searches.value
         _settings.value = _settings.value.copy(
@@ -102,17 +101,18 @@ object SearchRepository {
             Retailer("MediaMarkt", "https://www.mediamarkt.it/it/search.html?query="),
             Retailer("Euronics", "https://www.euronics.it/search?search="),
             Retailer("Unieuro", "https://www.unieuro.it/online/search?search="),
-            Retailer("PC Componentes", "https://www.pccomponentes.com/?s=")
+            Retailer("PC Componentes", "https://www.pccomponentes.com/?s="),
+            Retailer("Boulanger", "https://www.boulanger.com/resultats?search="),
+            Retailer("Shopmania", "https://www.shopmania.it/find?keyword=")
         )
 
         val offers = retailerUrls.mapIndexed { index, retailer ->
-            val adjusted = basePrice + (normalized.hashCode().absoluteValue % 31) * 2.5 + index * 18.0
+            val variance = (normalized.hashCode().absoluteValue % 31) * 2.5 + index * 18.0
             val shipping = if (index % 3 == 0) 6.99 else 0.0
             val url = retailer.url + queryText.replace(" ", "+")
-
             OfferResult(
                 shopName = retailer.name,
-                price = adjusted,
+                price = basePrice + variance,
                 shipping = shipping,
                 url = url
             )

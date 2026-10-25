@@ -19,13 +19,13 @@ class PriceMonitorWorker(
         val target = inputData.getDouble(KEY_TARGET_PRICE, Double.MAX_VALUE)
 
         val search = SearchRepository.search(keyword, code, if (target == Double.MAX_VALUE) null else target)
-        val bestOffer = search.offers.minByOrNull { it.totalPrice } ?: return Result.success()
+        val bestOffer = search.bestOffer ?: return Result.success()
 
         if (target != Double.MAX_VALUE && bestOffer.totalPrice <= target) {
             notifyPriceFound(search.keyword, bestOffer)
         }
 
-        Log.d("PriceMonitorWorker", "Checked: ${search.keyword} -> ${bestOffer.totalPrice}")
+        Log.d("PriceMonitorWorker", "Check completed: ${search.keyword} -> ${bestOffer.totalPrice}")
         return Result.success()
     }
 

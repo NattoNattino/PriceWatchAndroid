@@ -38,6 +38,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -66,11 +68,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         ensureNotificationChannel(this)
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    PriceWatchApp()
-                }
-            }
+            PriceWatchApp()
         }
     }
 }
@@ -82,46 +80,56 @@ fun PriceWatchApp(viewModel: PriceWatchViewModel = viewModel()) {
     val selectedSearch by viewModel.selectedSearch.collectAsState()
     val context = LocalContext.current
 
-    Scaffold { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            HeaderSection(settings)
+    val darkTheme = when (settings.theme) {
+        ThemeMode.SYSTEM -> false
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
 
-            SearchForm(
-                onSearch = { keyword, code, maxPrice, hour, minute ->
-                    val result = viewModel.addSearch(keyword, code, maxPrice, hour, minute)
-                    if (result != null) {
-                        schedulePeriodicCheck(context, result)
+    val colorScheme = if (darkTheme) darkColorScheme() else lightColorScheme()
+
+    MaterialTheme(colorScheme = colorScheme) {
+        Scaffold { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                HeaderSection(settings)
+
+                SearchForm(
+                    onSearch = { keyword, code, maxPrice, hour, minute ->
+                        val result = viewModel.addSearch(keyword, code, maxPrice, hour, minute)
+                        if (result != null) {
+                            scheduleOneTimeCheck(context, result, hour, minute)
+                        }
                     }
+                )
+
+                SettingsPanel(
+                    settings = settings,
+                    onLanguageChanged = viewModel::setLanguage,
+                    onThemeChanged = viewModel::setTheme,
+                    onNotificationTimeChanged = viewModel::setNotificationTime,
+                    onClearAll = viewModel::clearAllSearches
+                )
+
+                if (selectedSearch != null) {
+                    OfferDetailScreen(
+                        search = selectedSearch!!,
+                        onDeleteOffer = { offer -> viewModel.deleteOffer(selectedSearch!!.id, offer) },
+                        onBack = { viewModel.selectSearch(null) }
+                    )
+                } else {
+                    SearchListSection(
+                        searches = searches,
+                        onSelect = { viewModel.selectSearch(it.id) },
+                        onDeleteSearch = { viewModel.deleteSearch(it.id) },
+                        onDeleteAll = viewModel::clearAllSearches
+                    )
                 }
-            )
-
-            SettingsPanel(
-                settings = settings,
-                onLanguageChanged = viewModel::setLanguage,
-                onThemeChanged = viewModel::setTheme,
-                onNotificationTimeChanged = viewModel::setNotificationTime,
-                onClearAll = viewModel::clearAllSearches
-            )
-
-            if (selectedSearch != null) {
-                OfferDetailScreen(
-                    search = selectedSearch!!,
-                    onDeleteOffer = { offer -> viewModel.deleteOffer(selectedSearch!!.id, offer) },
-                    onBack = { viewModel.selectSearch(null) }
-                )
-            } else {
-                SearchListSection(
-                    searches = searches,
-                    onSelect = { viewModel.selectSearch(it.id) },
-                    onDeleteSearch = { viewModel.deleteSearch(it.id) },
-                    onDeleteAll = viewModel::clearAllSearches
-                )
             }
         }
     }
@@ -357,7 +365,7 @@ private fun SettingsPanel(
             text = { Text("Vuoi rimuovere tutte le ricerche salvate?") },
             confirmButton = {
                 TextButton(onClick = {
-                    onClearAll();
+                    onClearAll()
                     showDeleteAll = false
                 }) {
                     Text("Elimina")
@@ -449,7 +457,7 @@ private fun SearchSummaryCard(
             text = { Text("Vuoi rimuovere questa ricerca?") },
             confirmButton = {
                 TextButton(onClick = {
-                    onDelete();
+                    onDelete()
                     showDelete = false
                 }) { Text("Elimina") }
             },
@@ -548,11 +556,7 @@ private fun SwipeToDeleteRow(
 ) {
     val state = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) {
-                true
-            } else {
-                false
-            }
+            value == SwipeToDismissBoxValue.EndToStart
         }
     )
 
@@ -586,8 +590,10 @@ private fun SwipeToDeleteRow(
     }
 }
 
-private fun schedulePeriodicCheck(context: Context, search: SearchResult) {
-    val request = PeriodicWorkRequestBuilder<PriceMonitorWorker>(6, TimeUnit.HOURS)
+private fun scheduleOneTimeCheck(context: Context, search: SearchResult, hour: Int, minute: Int) {
+    val delaySeconds = computeDelayUntilTime(hour, minute)
+    val workRequest = androidx.work.OneTimeWorkRequestBuilder<PriceMonitorWorker>()
+        .setInitialDelay(delaySeconds, TimeUnit.SECONDS)
         .setInputData(
             workDataOf(
                 PriceMonitorWorker.KEY_KEYWORD to search.keyword,
@@ -597,11 +603,21 @@ private fun schedulePeriodicCheck(context: Context, search: SearchResult) {
         )
         .build()
 
-    WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+    WorkManager.getInstance(context).enqueueUniqueWork(
         "monitor_${search.id}",
         ExistingPeriodicWorkPolicy.UPDATE,
-        request
+        workRequest
     )
+}
+
+private fun computeDelayUntilTime(hour: Int, minute: Int): Long {
+    val now = java.time.LocalDateTime.now()
+    val target = now.withHour(hour.coerceIn(0, 23)).withMinute(minute.coerceIn(0, 59)).withSecond(0).withNano(0)
+    var next = target
+    if (!target.isAfter(now)) {
+        next = target.plusDays(1)
+    }
+    return java.time.Duration.between(now, next).seconds
 }
 
 private fun ensureNotificationChannel(context: Context) {
@@ -617,17 +633,11 @@ private fun ensureNotificationChannel(context: Context) {
 }
 
 enum class Language(val label: String) {
-    IT("Italiano"),
-    EN("English"),
-    FR("Français"),
-    ES("Español"),
-    DE("Deutsch")
+    IT("Italiano"), EN("English"), FR("Français"), ES("Español"), DE("Deutsch")
 }
 
 enum class ThemeMode(val label: String) {
-    SYSTEM("Sistema"),
-    LIGHT("Chiaro"),
-    DARK("Scuro")
+    SYSTEM("Sistema"), LIGHT("Chiaro"), DARK("Scuro")
 }
 
 data class AppSettings(

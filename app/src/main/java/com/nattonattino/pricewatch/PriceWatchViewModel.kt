@@ -8,7 +8,10 @@ data class SearchResult(
     val code: String? = null,
     val maxPrice: Double? = null,
     val offers: List<OfferResult>
-)
+) {
+    val bestOffer: OfferResult?
+        get() = offers.minByOrNull { it.totalPrice }
+}
 
 data class OfferResult(
     val shopName: String,
