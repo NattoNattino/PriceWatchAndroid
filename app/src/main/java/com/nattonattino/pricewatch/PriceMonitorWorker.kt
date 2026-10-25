@@ -4,50 +4,114 @@ import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.Locale
 
 class PriceWatchViewModel : ViewModel() {
     private val _searches = MutableStateFlow<List<SearchResult>>(emptyList())
     val searches: StateFlow<List<SearchResult>> = _searches.asStateFlow()
 
-    fun addSearch(keyword: String, code: String?, maxPrice: Double?): SearchResult? {
+    private val _settings = MutableStateFlow(AppSettings())
+    val settings: StateFlow<AppSettings> = _settings.asStateFlow()
+
+    private val _selectedSearch = MutableStateFlow<SearchResult?>(null)
+    val selectedSearch: StateFlow<SearchResult?> = _selectedSearch.asStateFlow()
+
+    fun addSearch(
+        keyword: String,
+        code: String?,
+        maxPrice: Double?,
+        notificationHour: Int,
+        notificationMinute: Int
+    ): SearchResult? {
         if (keyword.isBlank()) return null
 
-        val result = PriceOfferRepository.search(keyword, code, maxPrice)
-        _searches.value = listOf(result) + _searches.value
-        return result
+        val search = SearchRepository.search(keyword, code, maxPrice)
+        _searches.value = listOf(search) + _searches.value
+        _settings.value = _settings.value.copy(
+            notificationHour = notificationHour,
+            notificationMinute = notificationMinute
+        )
+        _selectedSearch.value = search
+        return search
     }
 
     fun deleteSearch(id: String) {
         _searches.value = _searches.value.filterNot { it.id == id }
+        if (_selectedSearch.value?.id == id) {
+            _selectedSearch.value = null
+        }
+    }
+
+    fun deleteOffer(searchId: String, offer: OfferResult) {
+        _searches.value = _searches.value.map { search ->
+            if (search.id == searchId) {
+                search.copy(offers = search.offers.filterNot { it.shopName == offer.shopName })
+            } else {
+                search
+            }
+        }
+
+        val selected = _selectedSearch.value
+        if (selected != null && selected.id == searchId) {
+            _selectedSearch.value = selected.copy(
+                offers = selected.offers.filterNot { it.shopName == offer.shopName }
+            )
+        }
+    }
+
+    fun clearAllSearches() {
+        _searches.value = emptyList()
+        _selectedSearch.value = null
+    }
+
+    fun selectSearch(id: String?) {
+        _selectedSearch.value = _searches.value.firstOrNull { it.id == id }
+    }
+
+    fun setLanguage(language: Language) {
+        _settings.value = _settings.value.copy(language = language)
+    }
+
+    fun setTheme(theme: ThemeMode) {
+        _settings.value = _settings.value.copy(theme = theme)
+    }
+
+    fun setNotificationTime(hour: Int, minute: Int) {
+        _settings.value = _settings.value.copy(
+            notificationHour = hour,
+            notificationMinute = minute
+        )
     }
 }
 
-object PriceOfferRepository {
+object SearchRepository {
     fun search(keyword: String, code: String?, maxPrice: Double?): SearchResult {
-        val query = if (code.isNullOrBlank()) keyword.trim() else code.trim()
+        val queryText = if (!code.isNullOrBlank()) "$keyword $code" else keyword
+        val normalized = queryText.lowercase(Locale.ROOT)
+
         val basePrice = when {
-            query.lowercase().contains("iphone") -> 799.0
-            query.lowercase().contains("tv") || query.lowercase().contains("televisore") -> 649.0
-            query.lowercase().contains("laptop") || query.lowercase().contains("notebook") -> 899.0
-            query.lowercase().contains("tablet") -> 349.0
+            normalized.contains("iphone") -> 799.0
+            normalized.contains("tv") || normalized.contains("televisore") -> 649.0
+            normalized.contains("laptop") || normalized.contains("notebook") -> 899.0
+            normalized.contains("tablet") -> 349.0
             else -> 129.0
         }
 
-        val shops = listOf(
-            "Amazon.it",
-            "MediaMarkt",
-            "Euronics",
-            "Unieuro",
-            "PC Componentes",
-            "Raiway Shop"
+        val retailerUrls = listOf(
+            Retailer("Amazon.it", "https://www.amazon.it/s?k="),
+            Retailer("MediaMarkt", "https://www.mediamarkt.it/it/search.html?query="),
+            Retailer("Euronics", "https://www.euronics.it/search?search="),
+            Retailer("Unieuro", "https://www.unieuro.it/online/search?search="),
+            Retailer("PC Componentes", "https://www.pccomponentes.com/?s=")
         )
 
-        val offers = shops.mapIndexed { index, shop ->
-            val adjusted = basePrice + (index * 23.0) + (query.hashCode().absoluteValue % 21) * 2.5
+        val offers = retailerUrls.mapIndexed { index, retailer ->
+            val adjusted = basePrice + (normalized.hashCode().absoluteValue % 31) * 2.5 + index * 18.0
             val shipping = if (index % 3 == 0) 6.99 else 0.0
-            val url = "https://www.google.com/search?q=${query.replace(" ", "+")}&tbm=shop"
+            val url = retailer.url + queryText.replace(" ", "+")
+
             OfferResult(
-                shopName = shop,
+                shopName = retailer.name,
                 price = adjusted,
                 shipping = shipping,
                 url = url
@@ -61,4 +125,9 @@ object PriceOfferRepository {
             offers = offers
         )
     }
+
+    private data class Retailer(
+        val name: String,
+        val url: String
+    )
 }

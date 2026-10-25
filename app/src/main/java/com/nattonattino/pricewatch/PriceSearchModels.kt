@@ -20,7 +20,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -55,6 +58,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
@@ -64,7 +68,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    PriceWatchScreen()
+                    PriceWatchApp()
                 }
             }
         }
@@ -72,9 +76,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun PriceWatchScreen(viewModel: PriceWatchViewModel = viewModel()) {
-    val context = LocalContext.current
+fun PriceWatchApp(viewModel: PriceWatchViewModel = viewModel()) {
     val searches by viewModel.searches.collectAsState()
+    val settings by viewModel.settings.collectAsState()
+    val selectedSearch by viewModel.selectedSearch.collectAsState()
+    val context = LocalContext.current
 
     Scaffold { paddingValues ->
         Column(
@@ -84,68 +90,83 @@ fun PriceWatchScreen(viewModel: PriceWatchViewModel = viewModel()) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            HeaderSection()
+            HeaderSection(settings)
+
             SearchForm(
-                onSearch = { keyword, code, maxPrice ->
-                    val search = viewModel.addSearch(keyword, code, maxPrice)
-                    if (search != null) {
-                        schedulePeriodicCheck(context, search)
+                onSearch = { keyword, code, maxPrice, hour, minute ->
+                    val result = viewModel.addSearch(keyword, code, maxPrice, hour, minute)
+                    if (result != null) {
+                        schedulePeriodicCheck(context, result)
                     }
                 }
             )
 
-            Text(
-                text = "Ricerche salvate",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+            SettingsPanel(
+                settings = settings,
+                onLanguageChanged = viewModel::setLanguage,
+                onThemeChanged = viewModel::setTheme,
+                onNotificationTimeChanged = viewModel::setNotificationTime,
+                onClearAll = viewModel::clearAllSearches
             )
 
-            if (searches.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("Nessuna ricerca ancora.")
-                }
+            if (selectedSearch != null) {
+                OfferDetailScreen(
+                    search = selectedSearch!!,
+                    onDeleteOffer = { offer -> viewModel.deleteOffer(selectedSearch!!.id, offer) },
+                    onBack = { viewModel.selectSearch(null) }
+                )
             } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(searches, key = { it.id }) { search ->
-                        SwipeToDeleteRow(
-                            onDelete = { viewModel.deleteSearch(search.id) },
-                            content = { SearchResultCard(search) }
-                        )
-                    }
-                }
+                SearchListSection(
+                    searches = searches,
+                    onSelect = { viewModel.selectSearch(it.id) },
+                    onDeleteSearch = { viewModel.deleteSearch(it.id) },
+                    onDeleteAll = viewModel::clearAllSearches
+                )
             }
         }
     }
 }
 
 @Composable
-private fun HeaderSection() {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
-            text = "PriceWatch",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = "Confronta offerte europee e ricevi alert in background",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+private fun HeaderSection(settings: AppSettings) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = "PriceWatch",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = when (settings.language) {
+                    Language.IT -> "Confronta offerte europee e ricevi alert"
+                    Language.EN -> "Compare European offers and get price alerts"
+                    Language.FR -> "Comparez les offres européennes et recevez des alertes"
+                    Language.ES -> "Compara ofertas europeas y recibe alertas"
+                    Language.DE -> "Vergleiche europäische Angebote und erhalte Benachrichtigungen"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Icon(Icons.Default.Notifications, contentDescription = null)
     }
 }
 
 @Composable
 private fun SearchForm(
-    onSearch: (String, String?, Double?) -> Unit
+    onSearch: (String, String?, Double?, Int, Int) -> Unit
 ) {
     var keyword by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
     var threshold by rememberSaveable { mutableStateOf("") }
     var useCode by rememberSaveable { mutableStateOf(false) }
     var usePrice by rememberSaveable { mutableStateOf(false) }
+    var hour by rememberSaveable { mutableStateOf("9") }
+    var minute by rememberSaveable { mutableStateOf("0") }
 
     Card(
         shape = RoundedCornerShape(18.dp),
@@ -161,8 +182,8 @@ private fun SearchForm(
                 value = keyword,
                 onValueChange = { keyword = it },
                 label = { Text("Nome prodotto o keyword") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
             )
 
             Row(
@@ -178,9 +199,9 @@ private fun SearchForm(
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it },
-                    label = { Text("Codice / SKU / EAN") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    label = { Text("Codice SKU / EAN") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
 
@@ -197,19 +218,37 @@ private fun SearchForm(
                 OutlinedTextField(
                     value = threshold,
                     onValueChange = { threshold = it },
-                    label = { Text("Prezzo massimo desiderato (€)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    label = { Text("Prezzo massimo (€)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = hour,
+                    onValueChange = { hour = it },
+                    label = { Text("Ora") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = minute,
+                    onValueChange = { minute = it },
+                    label = { Text("Min") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
                 )
             }
 
             Button(
                 onClick = {
-                    val parsedPrice = threshold.toDoubleOrNull()
                     onSearch(
                         keyword.trim(),
                         if (useCode) code.trim().ifBlank { null } else null,
-                        if (usePrice) parsedPrice else null
+                        if (usePrice) threshold.toDoubleOrNull() else null,
+                        hour.toIntOrNull() ?: 9,
+                        minute.toIntOrNull() ?: 0
                     )
                     keyword = ""
                     code = ""
@@ -228,55 +267,277 @@ private fun SearchForm(
 }
 
 @Composable
-private fun SearchResultCard(search: SearchResult) {
-    val uriHandler = LocalUriHandler.current
+private fun SettingsPanel(
+    settings: AppSettings,
+    onLanguageChanged: (Language) -> Unit,
+    onThemeChanged: (ThemeMode) -> Unit,
+    onNotificationTimeChanged: (Int, Int) -> Unit,
+    onClearAll: () -> Unit
+) {
+    var showDeleteAll by remember { mutableStateOf(false) }
 
     Card(
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(search.keyword, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                if (!search.code.isNullOrBlank()) {
-                    Text("Codice: ${search.code}")
-                }
-                if (search.maxPrice != null) {
-                    Text("Prezzo target: €${"%.2f".format(search.maxPrice)}")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Settings, contentDescription = null)
+                Text("Impostazioni", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Lingua")
+                Text(settings.language.label)
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Language.entries.forEach { language ->
+                    TextButton(onClick = { onLanguageChanged(language) }) {
+                        Text(language.label)
+                    }
                 }
             }
 
-            search.offers.forEach { offer ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(offer.shopName, fontWeight = FontWeight.Bold)
-                            Text("Totale: €${"%.2f".format(offer.totalPrice)}")
-                            Text("Spedizione: €${"%.2f".format(offer.shipping)}")
-                        }
-                        TextButton(onClick = { uriHandler.openUri(offer.url) }) {
-                            Text("Apri sito")
-                        }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Tema")
+                Text(settings.theme.label)
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ThemeMode.entries.forEach { theme ->
+                    TextButton(onClick = { onThemeChanged(theme) }) {
+                        Text(theme.label)
                     }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Orario notifica migliore offerta")
+                Text("${settings.notificationHour}:${String.format(Locale.ROOT, "%02d", settings.notificationMinute)}")
+            }
+
+            Button(
+                onClick = { onNotificationTimeChanged(9, 0) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Imposta default 09:00")
+            }
+
+            Button(
+                onClick = { showDeleteAll = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Elimina tutte le ricerche")
+            }
+        }
+    }
+
+    if (showDeleteAll) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAll = false },
+            title = { Text("Conferma eliminazione") },
+            text = { Text("Vuoi rimuovere tutte le ricerche salvate?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onClearAll();
+                    showDeleteAll = false
+                }) {
+                    Text("Elimina")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAll = false }) {
+                    Text("Annulla")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SearchListSection(
+    searches: List<SearchResult>,
+    onSelect: (SearchResult) -> Unit,
+    onDeleteSearch: (SearchResult) -> Unit,
+    onDeleteAll: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Ricerche salvate", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            TextButton(onClick = onDeleteAll) {
+                Text("Cancella tutto")
+            }
+        }
+
+        if (searches.isEmpty()) {
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text("Nessuna ricerca ancora.")
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(searches, key = { it.id }) { search ->
+                    SearchSummaryCard(
+                        search = search,
+                        onClick = { onSelect(search) },
+                        onDelete = { onDeleteSearch(search) }
+                    )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SearchSummaryCard(
+    search: SearchResult,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var showDelete by remember { mutableStateOf(false) }
+
+    SwipeToDeleteRow(
+        onDelete = { showDelete = true },
+        content = {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(search.keyword, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    if (!search.code.isNullOrBlank()) Text("Codice: ${search.code}")
+                    if (search.maxPrice != null) Text("Prezzo target: €${"%.2f".format(search.maxPrice)}")
+                    Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+                        Text("Vedi offerte")
+                    }
+                }
+            }
+        }
+    )
+
+    if (showDelete) {
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            title = { Text("Elimina ricerca") },
+            text = { Text("Vuoi rimuovere questa ricerca?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete();
+                    showDelete = false
+                }) { Text("Elimina") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDelete = false }) { Text("Annulla") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun OfferDetailScreen(
+    search: SearchResult,
+    onDeleteOffer: (OfferResult) -> Unit,
+    onBack: () -> Unit
+) {
+    val uriHandler = LocalUriHandler.current
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(search.keyword, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                TextButton(onClick = onBack) { Text("Indietro") }
+            }
+
+            if (!search.code.isNullOrBlank()) {
+                Text("Codice: ${search.code}")
+            }
+            if (search.maxPrice != null) {
+                Text("Prezzo soglia: €${"%.2f".format(search.maxPrice)}")
+            }
+
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(search.offers, key = { it.shopName }) { offer ->
+                    OfferItemCard(
+                        offer = offer,
+                        onDelete = { onDeleteOffer(offer) },
+                        onOpen = { uriHandler.openUri(offer.url) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfferItemCard(
+    offer: OfferResult,
+    onDelete: () -> Unit,
+    onOpen: () -> Unit
+) {
+    SwipeToDeleteRow(
+        onDelete = onDelete,
+        content = {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(offer.shopName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Prezzo: €${"%.2f".format(offer.price)}")
+                    Text("Spedizione: €${"%.2f".format(offer.shipping)}")
+                    Text("Prezzo totale: €${"%.2f".format(offer.totalPrice)}")
+                    Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
+                        Text("Apri sito ${offer.shopName}")
+                    }
+                }
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -288,7 +549,6 @@ private fun SwipeToDeleteRow(
     val state = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
             if (value == SwipeToDismissBoxValue.EndToStart) {
-                onDelete()
                 true
             } else {
                 false
@@ -303,7 +563,7 @@ private fun SwipeToDeleteRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Color(0xFFB3261E))
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp),
                 contentAlignment = Alignment.CenterEnd
             ) {
                 Icon(
@@ -316,6 +576,14 @@ private fun SwipeToDeleteRow(
         content = content,
         modifier = Modifier.fillMaxWidth()
     )
+
+    if (state.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            TextButton(onClick = onDelete) {
+                Text("Elimina")
+            }
+        }
+    }
 }
 
 private fun schedulePeriodicCheck(context: Context, search: SearchResult) {
@@ -347,3 +615,24 @@ private fun ensureNotificationChannel(context: Context) {
         manager?.createNotificationChannel(channel)
     }
 }
+
+enum class Language(val label: String) {
+    IT("Italiano"),
+    EN("English"),
+    FR("Français"),
+    ES("Español"),
+    DE("Deutsch")
+}
+
+enum class ThemeMode(val label: String) {
+    SYSTEM("Sistema"),
+    LIGHT("Chiaro"),
+    DARK("Scuro")
+}
+
+data class AppSettings(
+    val language: Language = Language.IT,
+    val theme: ThemeMode = ThemeMode.SYSTEM,
+    val notificationHour: Int = 9,
+    val notificationMinute: Int = 0
+)
